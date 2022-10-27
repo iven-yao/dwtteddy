@@ -1,8 +1,6 @@
 import java.awt.*;
 import java.awt.image.*;
 import java.io.*;
-
-import javax.imageio.ImageIO;
 import javax.swing.*;
 
 
@@ -10,22 +8,10 @@ public class ImageDisplay {
 
 	JFrame frame;
 	JLabel lbIm1;
-	BufferedImage buffered[];
+	BufferedImage bufImg, bufImgs[];
 	int width = 512; // default image width and height
 	int height = 512;
-
-	class YUV{
-		double y,u,v;
-		public YUV(double y, double u, double v) {
-			this.y = y;
-			this.u = u;
-			this.v = v;
-		}
-
-		public String toString(){
-			return "("+y+", "+u+" ,"+ v +")";
-		}
-	}
+	long fps = 1000/5; // default
 
 	class RGB{
 		int r,g,b;
@@ -39,36 +25,23 @@ public class ImageDisplay {
 			return "("+r+", "+g+" ,"+ b +")";
 		}
 	}
+
+	public RGB avg(RGB rgb1, RGB rgb2) {
+		int r = (rgb1.r + rgb2.r)/2;
+		int g = (rgb1.g + rgb2.g)/2;
+		int b = (rgb1.b + rgb2.b)/2;
+		return new RGB(r,g,b);
+	}
 	
-	RGB[][] inputRGB = new RGB[height][width];
-	YUV[][] convertedYUV = new YUV[height][width];
-	RGB[][] outputRGB = new RGB[height][width];
+	RGB[][][] levelRGB = new RGB[10][height][width];
 
-	private YUV RGBtoYUV(RGB rgb){
-		double y = 0.299*rgb.r + 0.587*rgb.g + 0.114*rgb.b;
-		double u = 0.596*rgb.r - 0.274*rgb.g - 0.322*rgb.b;
-		double v = 0.211*rgb.r - 0.523*rgb.g + 0.312*rgb.b;
-
-		return new YUV(y,u,v);
-	}
-
-	private RGB YUVtoRGB(YUV yuv){
-		int r = (int)(1*yuv.y + 0.956*yuv.u + 0.621*yuv.v);
-		int g = (int)(1*yuv.y - 0.272*yuv.u - 0.647*yuv.v);
-		int b = (int)(1*yuv.y - 1.106*yuv.u + 1.703*yuv.v);
-
-		r = r<0?0:r>255?255:r;
-		g = g<0?0:g>255?255:g;
-		b = b<0?0:b>255?255:b;
-
-		return new RGB(r, g, b);
-	}
 
 	/** Read Image RGB
 	 *  Reads the image of given width and height at the given imgPath into the provided BufferedImage.
 	 */
 	private void readImageRGB(String imgPath, BufferedImage img)
 	{
+
 		try
 		{
 			int frameLength = width*height*3;
@@ -100,10 +73,7 @@ public class ImageDisplay {
 					ind++;
 
 					RGB rgb = new RGB(r,g,b);
-					// System.out.println(tmp);
-
-					inputRGB[y][x] = rgb;
-					convertedYUV[y][x] = RGBtoYUV(rgb);
+					levelRGB[9][y][x] = rgb;
 				}
 			}
 
@@ -122,35 +92,101 @@ public class ImageDisplay {
     private void dwt(int level) {
         int currLevelWidth = (int)Math.pow(2, level);
         // row by row
-        for(int y = 0; y<currLevelWidth*2; y++) {
-            for(int x = 0; x < currLevelWidth; x++) {
-                
+        for(int y = 0; y<height; y++) {
+            for(int x = 0; x < width; x++) {
+                if(x < currLevelWidth) {
+					// calculate the dwt new rgb from upper level:
+					RGB rgb1 = levelRGB[level+1][y][x*2];
+					RGB rgb2 = levelRGB[level+1][y][x*2+1];
+					levelRGB[level][y][x] = avg(rgb1,rgb2);
+				} 
+				else {
+				 	levelRGB[level][y][x] = new RGB(0,0,0);
+				}
             }
         }
 
         // col by col
-
+		for(int y = 0; y<height; y++) {
+            for(int x = 0; x < width; x++) {
+                if(y < currLevelWidth) {
+					// calculate the dwt new rgb from curr level:
+					RGB rgb1 = levelRGB[level][y*2][x];
+					RGB rgb2 = levelRGB[level][y*2+1][x];
+					levelRGB[level][y][x] = avg(rgb1,rgb2);	
+				} 
+				else {
+					levelRGB[level][y][x] = new RGB(0, 0, 0);
+				}
+            }
+        }
     }
 
-	public void showIms(String[] args){
+	private void idwt(int level) {
+		int currLevelWidth = (int)Math.pow(2, level);
+		int step = width/currLevelWidth;
+		for(int y = height-1; y >=0; y--) {
+			for(int x = width-1; x>=0; x--) {
+				levelRGB[level][y][x] = levelRGB[level][y/step][x/step];
+			}
+		}
+		
+
+	}
+
+	private void setImgRGB(RGB[][] outputRGB, BufferedImage img) {
+		for(int y = 0; y < height; y++)
+		{
+			for(int x = 0; x < width; x++)
+			{
+
+				int r = outputRGB[y][x].r;
+				int g = outputRGB[y][x].g;
+				int b = outputRGB[y][x].b;
+				int pix = 0xff000000 | ((r & 0xff) << 16) | ((g & 0xff) << 8) | (b & 0xff);		
+				img.setRGB(x,y,pix);
+			}
+		}
+	}
+
+	public void showIms(String[] args) throws InterruptedException{
 
 		// Read a parameter from command line
 		// String param1 = args[1];
 		// System.out.println("The second parameter was: " + param1);
 
 		// Read in the specified image
-		buffered = new BufferedImage[10];
-		readImageRGB(args[0], buffered[0]);
-        for(int level = 9; level > Integer.valueOf(args[1]); level--){
+		bufImg = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+		readImageRGB(args[0], bufImg);
+		int lvl = Integer.valueOf(args[1]);
+		if(lvl == -1) {
+			bufImgs = new BufferedImage[10];
+			bufImgs[9] = bufImg;
+			//dwt
+			for(int level = 8; level >= 0; level--) {
+				bufImgs[level] = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+				dwt(level);
+			}
 
-        }
+			for(int level = 8; level >= 0; level--) {
+				idwt(level);
+				setImgRGB(levelRGB[level], bufImgs[level]);
+			}
+
+		} else {
+			for(int level = 8; level >= lvl; level--){
+				dwt(level);
+			}
+			idwt(lvl);
+			setImgRGB(levelRGB[lvl], bufImg);
+		}
 
 		// Use label to display the image
 		frame = new JFrame();
 		GridBagLayout gLayout = new GridBagLayout();
 		frame.getContentPane().setLayout(gLayout);
 
-		lbIm1 = new JLabel(new ImageIcon(buffered[0]));
+		lbIm1 = new JLabel(new ImageIcon(bufImg));
 
 		GridBagConstraints c = new GridBagConstraints();
 		c.fill = GridBagConstraints.HORIZONTAL;
@@ -166,11 +202,23 @@ public class ImageDisplay {
 
 		frame.pack();
 		frame.setVisible(true);
+
+		if(lvl == -1) {
+			for(int i = 0; i < 10; i++) {
+				lbIm1.setIcon(new ImageIcon(bufImgs[i]));
+				Thread.sleep(fps);
+			}
+		}
 	}
 
 	public static void main(String[] args) {
 		ImageDisplay ren = new ImageDisplay();
-		ren.showIms(args);
+		try {
+			ren.showIms(args);
+		} catch (InterruptedException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
 	}
 
 }
